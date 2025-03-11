@@ -230,4 +230,44 @@ void f(){
 }
 ```
 
-这份代码主要就是为了保证局部变量不在被销毁后被线程使用，
+这份代码主要就是为了保证局部变量不在被销毁后被线程使用，假如主线程退出该函数了，那么会导致悬空引用，所有为了防止生存期的问题，就要在这个函数终结前，终结该线程。
+
+​	这里我有个问题就是：**为什么子线程都抛出异常了，我们还需要调用join()防止出现生存期的问题，不是子线程已经抛出异常已经崩溃了，那我们还有什么必要去进行此操作，线程不是已经结束了吗，为什么还可以进行操作，我对此不能理解**？
+
+1. 线程对象是线程对象，他和线程本身没有直接联系，线程的崩溃不会直接传递到主线程的线程对象，并且线程对象在销毁前没有调用join()或者detach()会导致std::terminate()被调用
+2. 底层线程是操作系统的执行实体，他可能因为异常抛出、正常返回、或者外部终结而结束，凡是先结束！=线程对象的销毁。
+3. 若子线程抛出异常且未被捕获：
+   - 线程执行体会**立即终止**
+   - 但异常**不会自动传播到主线程**
+   - 操作系统会回收线程资源，但线程对象的状态仍需要显式管理
+
+​	为保证这种执行顺序（无论是否正常结束都要调用join()）我们可以使用类似于智能指针的手法（RAII)在析构函数里调用join()。
+
+```cpp
+class thread_guard{
+	std::thread& t;
+public:
+	explicit thread_guard(std::thread& t):
+		t(_t){
+		}
+	~thread_guard(){
+		if(t.joinable()){
+			t.join();
+		}
+	}
+	thread_guard(thread_guard const &)=delete;
+	trhead_guard& operator=(thread_gurad const&)=delete;
+};
+struct func;
+void f(){
+	int some_local_state = 0;
+	func my_func(some_local_state);
+	std::thread my_thread(my_func);
+	thread_guard g(t);
+	do_something_in_current_thread();
+}
+```
+
+当执行到f()末尾时，会调用析构函数让线程返回，这不需要我们手动join()；我们将赋值和拷贝构造函数都声明为删除，因为如果进行这类的赋值或者拷贝很有可能带来编译错误，比如析构两次，或者是生存期的延长。
+
+#### 2.1.4在后台运行线程
